@@ -115,6 +115,20 @@ commands:
       - run:
           name: Run CLI help text builder
           command: npm run generate-help
+  install_github_cli:
+    description: Install GitHub CLI (gh)
+    steps:
+      - run:
+          name: Install GitHub CLI (gh)
+          command: |
+            mkdir gh-download
+            curl -Lo ./gh-download/gh_1.3.1_linux_amd64.tar.gz https://github.com/cli/cli/releases/download/v1.3.1/gh_1.3.1_linux_amd64.tar.gz
+            tar -xf ./gh-download/gh_1.3.1_linux_amd64.tar.gz --directory gh-download
+            chmod a+x gh-download/gh_1.3.1_linux_amd64/bin/gh
+            mkdir -p /home/circleci/bin
+            mv gh-download/gh_1.3.1_linux_amd64/bin/gh /home/circleci/bin
+            which gh
+            gh --version
 
 jobs:
   regression-test:
@@ -127,6 +141,11 @@ jobs:
           version: 19.03.13
           # docker_layer_caching: true
       - install_shellspec
+      - run:
+          name: Install npm@7
+          command: |
+            sudo npm install -g npm@7
+      - show_node_version
       - install_deps
       - build_ts
       - generate_help
@@ -144,7 +163,7 @@ jobs:
           command: rm -rf node_modules/
       - run:
           name: Install only production dependencies
-          command: npm install
+          command: npx npm@6 install  # kludge because npm@7 will invoke the lifecycle scripts (thus running prepare -> tsc) even if we use --ignore-scripts
           environment:
             NODE_ENV: production
       - run:
@@ -174,10 +193,10 @@ jobs:
       - install_sbt_windows
       - install_node_npm:
           node_version: << parameters.node_version >>
-      - show_node_version
       - checkout
       - attach_workspace:
           at: ~/snyk
+      - show_node_version
       - install_deps
       - build_ts
       - run:
@@ -204,6 +223,19 @@ jobs:
       - checkout
       - attach_workspace:
           at: ~/snyk
+      - run:
+          name: Install npm@7
+          command: |
+            node_version=$(node --version)
+            echo "node version is: ${node_version}"
+            node_major_version="$(cut -d '.' -f 1 \<<< "${node_version}")"
+            if [[ ${node_major_version} == "v8" ]]; then
+              echo "using npm@6 for node 8 because npm@7 is not compatible"
+            else
+              echo "installing npm@7"
+              sudo npm install -g npm@7
+            fi
+      - show_node_version
       - install_deps
       - build_ts
       - run:
@@ -226,13 +258,70 @@ jobs:
       - setup_remote_docker:
           version: 19.03.13
           # docker_layer_caching: true
+      
+      - install_github_cli
+      - run:
+          name: Install npm@7
+          command: |
+            sudo npm install -g npm@7
+      - show_node_version
+      - run:
+          name: Setup Lerna
+          command: sudo npm install -g lerna
       - install_deps
       - generate_help
-      - run: sudo npm i -g semantic-release @semantic-release/exec pkg
-      - run: sudo apt-get install -y osslsigncode
       - run:
-          name: Publish to GitHub
-          command: semantic-release
+          name: Update package versions
+          command: ./release-scripts/update-versions.sh
+
+      - run:
+          name: Make git ignore changes relating to version updates and to .npmrc
+          command: |
+            git update-index --skip-worktree -- ./lerna.json
+            git update-index --skip-worktree -- ./package.json
+            git update-index --skip-worktree -- ./packages/snyk-protect/package.json
+            git update-index --skip-worktree -- ./.npmrc
+
+      - run:
+          name: Lerna Publish
+          command: |
+            lerna publish minor --yes --no-push --no-git-tag-version
+
+      - run: 
+          name: Install osslsigncode
+          command: sudo apt-get install -y osslsigncode
+      - run:
+          name: Create Binaries
+          command: |
+            ./release-scripts/make-binaries.sh
+            ls -la ./binary-releases
+
+      - store_artifacts:
+          path: ./binary-releases
+
+      - run:
+          name: Create a GitHub release
+          command: |
+            latest_version=$(cat lerna.json | jq .version -r)
+            new_tag="v${latest_version}"
+            gh release create ${new_tag} --title "${new_tag}" -n "Release notes not implemented yet" --prerelease
+
+      - run:
+          name: Add Assets to GitHub Release
+          command: |
+            gh_latest_release_tag=$(gh api repos/${CIRCLE_PROJECT_USERNAME}/${CIRCLE_PROJECT_REPONAME}/releases/latest | jq .tag_name -r)
+            echo "gh_latest_release_tag: ${gh_latest_release_tag}"
+            gh release upload $gh_latest_release_tag \
+              binary-releases/snyk-alpine \
+              binary-releases/snyk-linux \
+              binary-releases/snyk-macos \
+              binary-releases/snyk-win.exe \
+              binary-releases/docker-mac-signed-bundle.tar.gz \
+              binary-releases/snyk-alpine.sha256 \
+              binary-releases/snyk-linux.sha256 \
+              binary-releases/snyk-macos.sha256 \
+              binary-releases/snyk-win.exe.sha256 \
+              binary-releases/docker-mac-signed-bundle.tar.gz.sha256
 
 workflows:
   version: 2
@@ -241,7 +330,7 @@ workflows:
       - regression-test:
           name: Regression Test
           context: nodejs-install
-          node_version: '8'
+          node_version: '12.16.2'
           filters:
             branches:
               ignore:
@@ -249,7 +338,7 @@ workflows:
       - test-windows:
           name: Windows Tests for Node v12 support
           context: nodejs-install
-          node_version: '12.0.0'
+          node_version: '12.16.2'
           requires:
             - Regression Test
           filters:
