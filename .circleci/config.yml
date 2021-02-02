@@ -8,6 +8,9 @@ defaults: &defaults
     node_version:
       type: string
       default: ''
+    use_npm7:
+      type: boolean
+      default: true
   working_directory: ~/snyk
 
 windows_defaults: &windows_defaults
@@ -21,11 +24,14 @@ commands:
     description: Install dependencies
     steps:
       - run:
-          name: Use snyk-main npmjs user
-          command: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
-      - run:
           name: Install dependencies
           command: npm install
+  update_local_npmrc_linux: 
+    description: Update local .npmrc file (Linux)
+    steps:
+      - run:
+          name: Update local .npmrc file (Linux)
+          command: echo "//registry.npmjs.org/:_authToken=${NPM_TOKEN}" >> .npmrc
   build_ts:
     description: Build js files from ts
     steps:
@@ -81,19 +87,19 @@ commands:
       - run:
           name: Installing sbt
           command: sdk install sbt 1.3.12
-  install_node_npm:
-    description: Install correct Node version
+  install_node_windows:
+    description: Install the given Node version on Windows using Chocolatey
     parameters:
       node_version:
         type: string
         default: ''
     steps:
       - run:
-          name: Install correct version of Node
-          command: nvm install << parameters.node_version >>
-      - run:
-          name: Use correct version of Node
-          command: nvm use << parameters.node_version >>
+          name: Install Node with Chocolatey
+          command: |
+            $current_node_version = node --version
+            nvm uninstall $current_node_version
+            choco install nodejs --version=<< parameters.node_version >>
   install_shellspec:
     description: Install Shellspec
     steps:
@@ -146,6 +152,7 @@ jobs:
           command: |
             sudo npm install -g npm@7
       - show_node_version
+      - update_local_npmrc_linux
       - install_deps
       - build_ts
       - generate_help
@@ -191,12 +198,21 @@ jobs:
       - install_gradle_windows
       - install_maven_windows
       - install_sbt_windows
-      - install_node_npm:
+      - show_node_version
+      - install_node_windows:
           node_version: << parameters.node_version >>
+      - show_node_version
       - checkout
       - attach_workspace:
           at: ~/snyk
+      - when:
+          condition:  << parameters.use_npm7 >>
+          steps:
+            - run: npm install -g npm@7
       - show_node_version
+      - run:
+          name: Update local .npmrc file (Windows)
+          command: echo "//registry.npmjs.org/:_authToken=$env:NPM_TOKEN" >> .npmrc
       - install_deps
       - build_ts
       - run:
@@ -223,19 +239,12 @@ jobs:
       - checkout
       - attach_workspace:
           at: ~/snyk
-      - run:
-          name: Install npm@7
-          command: |
-            node_version=$(node --version)
-            echo "node version is: ${node_version}"
-            node_major_version="$(cut -d '.' -f 1 \<<< "${node_version}")"
-            if [[ ${node_major_version} == "v8" ]]; then
-              echo "using npm@6 for node 8 because npm@7 is not compatible"
-            else
-              echo "installing npm@7"
-              sudo npm install -g npm@7
-            fi
+      - when:
+          condition:  << parameters.use_npm7 >>
+          steps:
+            - run: sudo npm install -g npm@7
       - show_node_version
+      - update_local_npmrc_linux
       - install_deps
       - build_ts
       - run:
@@ -268,6 +277,7 @@ jobs:
       - run:
           name: Setup Lerna
           command: sudo npm install -g lerna
+      - update_local_npmrc_linux
       - install_deps
       - generate_help
       - run:
@@ -348,7 +358,7 @@ workflows:
       - test-windows:
           name: Windows Tests for Node v14 support
           context: nodejs-install
-          node_version: '14'
+          node_version: '14.15.4'
           requires:
             - Regression Test
           filters:
@@ -358,7 +368,7 @@ workflows:
       - test-windows:
           name: Windows Tests for Node v10 support
           context: nodejs-install
-          node_version: '10.21.0'
+          node_version: '10.23.1'
           requires:
             - Regression Test
           filters:
@@ -369,6 +379,7 @@ workflows:
           name: Windows Tests for Node v8 support
           context: nodejs-install
           node_version: '8.17.0'
+          use_npm7: false
           requires:
             - Regression Test
           filters:
@@ -388,7 +399,7 @@ workflows:
       - test-unix:
           name: Unix Tests for Node v14 support
           context: nodejs-install
-          node_version: '14'
+          node_version: '14.15.4'
           requires:
             - Regression Test
           filters:
@@ -398,7 +409,7 @@ workflows:
       - test-unix:
           name: Unix Tests for Node v10 support
           context: nodejs-install
-          node_version: '10'
+          node_version: '10.23.1'
           requires:
             - Regression Test
           filters:
@@ -408,7 +419,8 @@ workflows:
       - test-unix:
           name: Unix Tests for Node v8 support
           context: nodejs-install
-          node_version: '8'
+          node_version: '8.17.0'
+          use_npm7: false
           requires:
             - Regression Test
           filters:
@@ -419,7 +431,7 @@ workflows:
       - release:
           name: Release
           context: nodejs-app-release
-          node_version: '14'
+          node_version: '14.15.4'
           filters:
             branches:
               only:
